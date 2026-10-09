@@ -1,0 +1,484 @@
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(ranger)
+library(glmnet)
+library(themis)
+
+employee <- read_csv("week13_employee.csv")
+
+glimpse(employee)
+dim(employee)
+head(employee)
+```
+
+```{r data_preparation}
+# Check missing values
+colSums(is.na(employee))
+
+# Check employee attrition
+table(employee$Attrition)
+
+# Calculate attrition percentages
+prop.table(table(employee$Attrition)) * 100
+
+# Convert outcome to factor
+employee <- employee %>%
+  mutate(
+    Attrition = factor(
+      Attrition,
+      levels = c("Yes", "No")
+    ),
+    across(where(is.character), as.factor)
+  )
+
+# Confirm factor levels
+levels(employee$Attrition)
+
+# Check structure
+glimpse(employee)
+```
+
+```{r attrition_graph}
+ggplot(employee, aes(x = Attrition, fill = Attrition)) +
+  geom_bar() +
+  labs(
+    title = "Employee Attrition Distribution",
+    x = "Employee Attrition",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+```{r job_satisfaction_graph}
+employee %>%
+  group_by(SatisfactionJob) %>%
+  summarise(
+    AttritionRate = mean(Attrition == "Yes") * 100,
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = factor(SatisfactionJob),
+    y = AttritionRate
+  )) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Attrition Rate by Job Satisfaction",
+    x = "Job Satisfaction Level",
+    y = "Attrition Rate (%)"
+  ) +
+  theme_minimal()
+```
+
+```{r age_analysis}
+ggplot(employee,
+       aes(x = Attrition, y = Age,
+           fill = Attrition)) +
+  geom_boxplot() +
+  labs(
+    title = "Employee Age by Attrition",
+    x = "Employee Attrition",
+    y = "Employee Age"
+  ) +
+  theme_minimal()
+```
+
+```{r business_travel_analysis}
+employee %>%
+  group_by(BusinessTravel) %>%
+  summarise(
+    AttritionRate = mean(Attrition == "Yes") * 100,
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = BusinessTravel,
+    y = AttritionRate,
+    fill = BusinessTravel
+  )) +
+  geom_col() +
+  labs(
+    title = "Employee Attrition Rate by Business Travel",
+    x = "Business Travel Frequency",
+    y = "Attrition Rate (%)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r years_at_company_analysis}
+ggplot(employee,
+       aes(x = Attrition,
+           y = YearsAtCompany,
+           fill = Attrition)) +
+  geom_boxplot() +
+  labs(
+    title = "Years at Company by Employee Attrition",
+    x = "Employee Attrition",
+    y = "Years at Company"
+  ) +
+  theme_minimal()
+```
+
+```{r work_life_balance_analysis}
+employee %>%
+  group_by(SatisfactionWorkLife) %>%
+  summarise(
+    AttritionRate = mean(Attrition == "Yes") * 100,
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = factor(SatisfactionWorkLife),
+    y = AttritionRate
+  )) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Employee Attrition Rate by Work-Life Balance",
+    x = "Work-Life Balance Satisfaction",
+    y = "Attrition Rate (%)"
+  ) +
+  theme_minimal()
+```
+
+```{r data_splitting}
+# Set seed for reproducibility
+set.seed(123)
+
+# Split data: 80% training and 20% testing
+employee_split <- initial_split(
+  employee,
+  prop = 0.80,
+  strata = Attrition
+)
+
+# Create training and testing datasets
+train_data <- training(employee_split)
+test_data <- testing(employee_split)
+
+# Check dimensions
+dim(train_data)
+dim(test_data)
+
+# Check attrition distribution
+table(train_data$Attrition)
+table(test_data$Attrition)
+```
+
+```{r preprocessing}
+# Create preprocessing recipe
+employee_recipe <- recipe(
+  Attrition ~ .,
+  data = train_data
+) %>%
+  step_zv(all_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Display recipe
+employee_recipe
+```
+
+```{r logistic_regression}
+# Define logistic regression model
+log_model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+# Create modelling workflow
+log_workflow <- workflow() %>%
+  add_recipe(employee_recipe) %>%
+  add_model(log_model)
+
+# Train the model
+log_fit <- fit(
+  log_workflow,
+  data = train_data
+)
+
+# Display model
+log_fit
+```
+
+```{r cross_validation}
+set.seed(123)
+
+# Create 5-fold cross-validation
+employee_folds <- vfold_cv(
+  train_data,
+  v = 5,
+  strata = Attrition
+)
+
+employee_folds
+```
+
+```{r logistic_evaluation}
+# Evaluate logistic regression
+log_cv <- fit_resamples(
+  log_workflow,
+  resamples = employee_folds,
+  metrics = metric_set(
+    precision,
+    recall,
+    accuracy,
+    roc_auc
+  ),
+  control = control_resamples(
+    save_pred = TRUE
+  )
+)
+
+# Display evaluation results
+collect_metrics(log_cv)
+```
+
+```{r random_forest_model}
+# Define Random Forest model
+rf_model <- rand_forest(
+  trees = 500,
+  mtry = 5,
+  min_n = 10
+) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+# Create Random Forest workflow
+rf_workflow <- workflow() %>%
+  add_recipe(employee_recipe) %>%
+  add_model(rf_model)
+
+# Display workflow
+rf_workflow
+```
+
+```{r random_forest_evaluation}
+set.seed(123)
+
+# Evaluate Random Forest using same folds
+rf_cv <- fit_resamples(
+  rf_workflow,
+  resamples = employee_folds,
+  metrics = metric_set(
+    precision,
+    recall,
+    accuracy,
+    roc_auc
+  ),
+  control = control_resamples(
+    save_pred = TRUE
+  )
+)
+
+# Display results
+collect_metrics(rf_cv)
+```
+
+```{r threshold_analysis}
+# Collect cross-validation predictions
+rf_predictions <- collect_predictions(rf_cv)
+
+# Compare classification thresholds
+threshold_results <- map_dfr(
+  c(0.30, 0.40, 0.50, 0.60, 0.70),
+  function(threshold) {
+
+    predictions <- rf_predictions %>%
+      mutate(
+        predicted_class = factor(
+          if_else(
+            .pred_Yes >= threshold,
+            "Yes",
+            "No"
+          ),
+          levels = c("Yes", "No")
+        )
+      )
+
+    tibble(
+      Threshold = threshold,
+      Precision = precision(
+        predictions,
+        truth = Attrition,
+        estimate = predicted_class
+      )$.estimate,
+      Recall = recall(
+        predictions,
+        truth = Attrition,
+        estimate = predicted_class
+      )$.estimate,
+      Predicted_Yes = sum(
+        predictions$predicted_class == "Yes"
+      )
+    )
+  }
+)
+
+print(threshold_results)
+```
+
+```{r pca_preprocessing}
+# Create PCA preprocessing recipe
+pca_recipe <- recipe(
+  Attrition ~ .,
+  data = train_data
+) %>%
+  step_zv(all_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_pca(all_numeric_predictors(),
+           threshold = 0.95)
+
+# Display PCA recipe
+pca_recipe
+```
+
+```{r pca_model}
+# Create logistic regression workflow with PCA
+pca_workflow <- workflow() %>%
+  add_recipe(pca_recipe) %>%
+  add_model(log_model)
+
+# Evaluate using same cross-validation folds
+set.seed(123)
+
+pca_cv <- fit_resamples(
+  pca_workflow,
+  resamples = employee_folds,
+  metrics = metric_set(
+    precision,
+    recall,
+    accuracy,
+    roc_auc
+  ),
+  control = control_resamples(
+    save_pred = TRUE
+  )
+)
+
+# Display PCA model performance
+collect_metrics(pca_cv)
+```
+
+```{r model_comparison}
+# Combine cross-validation results
+comparison <- bind_rows(
+  collect_metrics(log_cv) %>%
+    mutate(Model = "Logistic Regression"),
+  collect_metrics(rf_cv) %>%
+    mutate(Model = "Random Forest"),
+  collect_metrics(pca_cv) %>%
+    mutate(Model = "Logistic Regression + PCA")
+) %>%
+  select(Model, .metric, mean) %>%
+  mutate(mean = round(mean * 100, 2))
+
+print(comparison)
+```
+
+```{r final_model_evaluation}
+# Train Random Forest on the full training dataset
+set.seed(123)
+
+final_rf_fit <- fit(
+  rf_workflow,
+  data = train_data
+)
+
+# Predict probabilities on the test dataset
+test_predictions <- bind_cols(
+  test_data %>% select(Attrition),
+  predict(
+    final_rf_fit,
+    new_data = test_data,
+    type = "prob"
+  )
+)
+
+# Apply the selected 0.60 threshold
+test_predictions <- test_predictions %>%
+  mutate(
+    predicted_class = factor(
+      if_else(
+        .pred_Yes >= 0.60,
+        "Yes",
+        "No"
+      ),
+      levels = c("Yes", "No")
+    )
+  )
+
+# Display confusion matrix
+conf_mat(
+  test_predictions,
+  truth = Attrition,
+  estimate = predicted_class
+)
+
+# Calculate final performance metrics
+final_metrics <- metric_set(
+  precision,
+  recall,
+  accuracy,
+  roc_auc
+)(
+  test_predictions,
+  truth = Attrition,
+  estimate = predicted_class,
+  .pred_Yes
+)
+
+print(final_metrics)
+```
+
+```{r overfitting_check}
+# Predict probabilities on training data
+train_predictions <- bind_cols(
+  train_data %>% select(Attrition),
+  predict(final_rf_fit, train_data, type = "prob")
+) %>%
+  mutate(
+    predicted_class = factor(
+      if_else(.pred_Yes >= 0.60, "Yes", "No"),
+      levels = c("Yes", "No")
+    )
+  )
+
+# Calculate training metrics
+train_metrics <- metric_set(
+  precision, recall, accuracy, roc_auc
+)(
+  train_predictions,
+  truth = Attrition,
+  estimate = predicted_class,
+  .pred_Yes
+)
+
+# Compare training and testing results
+performance_comparison <- bind_rows(
+  train_metrics %>%
+    mutate(Dataset = "Training"),
+  final_metrics %>%
+    mutate(Dataset = "Testing")
+) %>%
+  select(Dataset, .metric, .estimate) %>%
+  mutate(
+    .estimate = round(.estimate * 100, 2)
+  )
+
+print(performance_comparison)
+```
+## Conclusion and Management Recommendations
+
+This analysis investigated factors associated with employee attrition and developed classification models to predict whether employees are likely to leave the organisation.
+
+The exploratory analysis identified several factors associated with attrition, including job satisfaction, employee age, business travel frequency, years at the company, and work-life balance satisfaction. Employees with lower job satisfaction, shorter tenure, and frequent business travel generally demonstrated higher attrition rates.
+
+Three classification approaches were compared: Logistic Regression, Random Forest, and Logistic Regression with PCA. Random Forest achieved the highest cross-validation precision of 73.2% at the standard classification threshold.
+
+To meet management's preference for high precision, a classification threshold of 0.60 was selected. On the testing dataset, Random Forest achieved 100% precision, 4.17% recall, 84.4% accuracy, and 80.8% ROC-AUC.
+
+However, the model correctly identified only 2 of the 48 employees who left. The substantial difference between training and testing ROC-AUC also suggests overfitting.
+
+Overall, Random Forest was the strongest candidate for management's high-precision objective among the models tested. Nevertheless, its low recall and limited number of positive predictions mean that it should not be relied upon as a standalone decision-making tool.
+
+Management should consider further model tuning, additional relevant employee data, and validation on new datasets before operational use. Any retention interventions should be supportive, confidential, and based on employee feedback rather than predictions alone.
